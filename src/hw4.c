@@ -8,55 +8,144 @@
 #define PORT1 2201
 #define PORT2 2202
 #define BUFFER_SIZE 1024
+#define MIN_BOARD_SIZE 10
+#define MAX_SHIPS 5
+
+typedef struct {
+    int row;
+    int col;
+    char result;  // 'H' for hit, 'M' for miss
+} Shot;
+
+typedef struct {
+    int socket;
+    int ships_remaining;
+    int board[20][20];
+    Shot shots[400];  // Maximum possible shots
+    int shot_count;
+    int initialized;
+} Player;
+
+typedef struct {
+    int width;
+    int height;
+    Player player1;
+    Player player2;
+    int current_turn;  // 1 or 2
+    int game_phase;    // 0=begin, 1=init, 2=play
+} GameState;
+
+void send_error(int socket, int code) {
+    char response[32];
+    sprintf(response, "E %d\n", code);
+    send(socket, response, strlen(response), 0);
+}
+
+void send_ack(int socket) {
+    char response[] = "A\n";
+    send(socket, response, strlen(response), 0);
+}
+
+void send_halt(int socket, int win) {
+    char response[8];
+    sprintf(response, "H %d\n", win);
+    send(socket, response, strlen(response), 0);
+}
+
+void handle_begin(GameState *state, char *packet, int player) {
+    if (state->game_phase != 0) {
+        send_error(player == 1 ? state->player1.socket : state->player2.socket, 100);
+        return;
+    }
+
+    if (player == 1) {
+        int width, height;
+        if (sscanf(packet, "B %d %d", &width, &height) != 2) {
+            send_error(state->player1.socket, 200);
+            return;
+        }
+        if (width < MIN_BOARD_SIZE || height < MIN_BOARD_SIZE) {
+            send_error(state->player1.socket, 200);
+            return;
+        }
+        state->width = width;
+        state->height = height;
+        send_ack(state->player1.socket);
+    } else {
+        if (strlen(packet) > 2) {  // Just "B\n"
+            send_error(state->player2.socket, 200);
+            return;
+        }
+        send_ack(state->player2.socket);
+        state->game_phase = 1;  // Move to initialization phase
+    }
+}
+
+void send_shot_response(int socket, int ships_remaining, char result) {
+    char response[32];
+    sprintf(response, "R %d %c\n", ships_remaining, result);
+    send(socket, response, strlen(response), 0);
+}
+
+void send_query_response(Player *player) {
+    char response[1024] = "";
+    sprintf(response, "G %d", player->ships_remaining);
+    
+    for (int i = 0; i < player->shot_count; i++) {
+        char shot[32];
+        sprintf(shot, " %c %d %d", player->shots[i].result, 
+                player->shots[i].col, player->shots[i].row);
+        strcat(response, shot);
+    }
+    strcat(response, "\n");
+    send(player->socket, response, strlen(response), 0);
+}
 
 int main() {
-    int server_fd1;
-    struct sockaddr_in address1;
-    int opt = 1;
-    int addrlen = sizeof(address1);
+    GameState state = {0};
+    state.player1.ships_remaining = MAX_SHIPS;
+    state.player2.ships_remaining = MAX_SHIPS;
     
-    // Create socket file descriptor
-    if ((server_fd1 = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
-        perror("socket failed");
-        exit(EXIT_FAILURE);
+    // Socket setup code here
+    
+    while (1) {
+        char buffer[BUFFER_SIZE] = {0};
+        int current_socket = state.current_turn == 1 ? 
+                           state.player1.socket : state.player2.socket;
+        
+        int bytes_read = read(current_socket, buffer, BUFFER_SIZE);
+        if (bytes_read <= 0) continue;
+        
+        switch (buffer[0]) {
+            case 'B':
+                handle_begin(&state, buffer, state.current_turn);
+                break;
+            case 'I':
+                // Handle initialization
+                break;
+            case 'S':
+                // Handle shots
+                break;
+            case 'Q':
+                if (state.game_phase != 2) {
+                    send_error(current_socket, 102);
+                    break;
+                }
+                send_query_response(state.current_turn == 1 ? 
+                                  &state.player1 : &state.player2);
+                break;
+            case 'F':
+                if (state.game_phase != 2) {
+                    send_error(current_socket, 102);
+                    break;
+                }
+                send_halt(state.player1.socket, state.current_turn == 2);
+                send_halt(state.player2.socket, state.current_turn == 1);
+                return 0;
+            default:
+                send_error(current_socket, 100);
+        }
     }
-    
-    // Set socket options
-    if (setsockopt(server_fd1, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
-        perror("setsockopt");
-        exit(EXIT_FAILURE);
-    }
-    
-    // Setup address structure
-    address1.sin_family = AF_INET;
-    address1.sin_addr.s_addr = INADDR_ANY;
-    address1.sin_port = htons(PORT1);
-    
-    // Bind socket
-    if (bind(server_fd1, (struct sockaddr *)&address1, sizeof(address1)) < 0) {
-        perror("bind failed");
-        exit(EXIT_FAILURE);
-    }
-    
-    // Listen for connections
-    if (listen(server_fd1, 1) < 0) {
-        perror("listen");
-        exit(EXIT_FAILURE);
-    }
-
-    // Accept connection
-    int client_socket = accept(server_fd1, (struct sockaddr *)&address1, (socklen_t*)&addrlen);
-    if (client_socket < 0) {
-        perror("accept");
-        exit(EXIT_FAILURE);
-    }
-
-    // Basic response to test connection
-    char response[] = "OK\n";
-    send(client_socket, response, strlen(response), 0);
-    
-    close(client_socket);
-    close(server_fd1);
     
     return 0;
 }
