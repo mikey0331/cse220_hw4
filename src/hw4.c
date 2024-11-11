@@ -5,26 +5,21 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/select.h>
-#include <errno.h>
 
 #define PORT1 2201
 #define PORT2 2202
 #define BUFFER_SIZE 1024
-#define MAX_BOARD 20
 
 typedef struct {
     int socket;
-    int board[MAX_BOARD][MAX_BOARD];
-    int shots[MAX_BOARD][MAX_BOARD];
-    int ships_remaining;
-    int ready;
+    int initialized;
 } Player;
 
 typedef struct {
-    int width;
-    int height;
     Player p1;
     Player p2;
+    int width;
+    int height;
     int phase;
 } GameState;
 
@@ -46,38 +41,25 @@ int setup_socket(int port) {
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(port);
     
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        exit(1);
-    }
-    
-    if (listen(server_fd, 1) < 0) {
-        exit(1);
-    }
+    bind(server_fd, (struct sockaddr *)&address, sizeof(address));
+    listen(server_fd, 1);
     
     return server_fd;
 }
 
-void handle_packet(GameState *game, char *packet, int player_num) {
-    Player *current = (player_num == 1) ? &game->p1 : &game->p2;
-    Player *other = (player_num == 1) ? &game->p2 : &game->p1;
+void handle_packet(GameState *game, char *packet, int is_p1) {
+    Player *current = is_p1 ? &game->p1 : &game->p2;
+    Player *other = is_p1 ? &game->p2 : &game->p1;
 
     switch(packet[0]) {
-        case 'F': // Forfeit
-            if (game->phase < 2) {
-                send_packet(current->socket, "E 102");
-                return;
-            }
-            send_packet(current->socket, "H 0");  // Player forfeits
-            send_packet(other->socket, "H 1");   // Other player wins
+        case 'F':
+            send_packet(current->socket, "H 0");
+            send_packet(other->socket, "H 1");
             exit(0);
             break;
 
-        case 'B': // Board Size
-            if (game->phase != 0) {
-                send_packet(current->socket, "E 100");
-                return;
-            }
-            if (player_num == 1) {
+        case 'B':
+            if (is_p1) {
                 int w, h;
                 if (sscanf(packet, "B %d %d", &w, &h) != 2 || w < 10 || h < 10) {
                     send_packet(current->socket, "E 200");
@@ -86,60 +68,29 @@ void handle_packet(GameState *game, char *packet, int player_num) {
                 game->width = w;
                 game->height = h;
             }
-            current->ready = 1;
-            send_packet(current->socket, "A");
-            if (game->p1.ready && game->p2.ready) {
-                game->phase = 1;
-            }
-            break;
-
-        case 'I': // Ship Placement
-            if (game->phase != 1) {
-                send_packet(current->socket, "E 101");
-                return;
-            }
-            // Add validation for ship placement here (e.g., check if ships overlap)
-            send_packet(current->socket, "A");
-            current->ready = 2;
-            if (game->p1.ready == 2 && game->p2.ready == 2) {
-                game->phase = 2;
-            }
-            break;
-
-        case 'S': // Shooting
-            if (game->phase != 2) {
-                send_packet(current->socket, "E 102");
-                return;
-            }
-            int row, col;
-            if (sscanf(packet, "S %d %d", &row, &col) != 2) {
-                send_packet(current->socket, "E 202");
-                return;
-            }
-            if (row < 0 || row >= game->height || col < 0 || col >= game->width) {
-                send_packet(current->socket, "E 400");
-                return;
-            }
             send_packet(current->socket, "A");
             break;
 
-        case 'Q': // Quit
-            if (game->phase != 2) {
-                send_packet(current->socket, "E 102");
-                return;
-            }
+        case 'I':
+            send_packet(current->socket, "A");
+            current->initialized = 1;
+            break;
+
+        case 'S':
+            send_packet(current->socket, "A");
+            break;
+
+        case 'Q':
             send_packet(current->socket, "A");
             break;
 
         default:
-            send_packet(current->socket, "E 100"); // Invalid packet
+            send_packet(current->socket, "E 200");
     }
 }
 
 int main() {
     GameState game = {0};
-    game.p1.ships_remaining = 5;
-    game.p2.ships_remaining = 5;
     
     int server1_fd = setup_socket(PORT1);
     int server2_fd = setup_socket(PORT2);
@@ -156,33 +107,20 @@ int main() {
         FD_SET(game.p2.socket, &readfds);
         
         int maxfd = (game.p1.socket > game.p2.socket) ? game.p1.socket : game.p2.socket;
-        
-        if (select(maxfd + 1, &readfds, NULL, NULL, NULL) < 0) {
-            continue;
-        }
+        select(maxfd + 1, &readfds, NULL, NULL, NULL);
         
         if (FD_ISSET(game.p1.socket, &readfds)) {
             memset(buffer, 0, BUFFER_SIZE);
-            ssize_t bytes = read(game.p1.socket, buffer, BUFFER_SIZE - 1);
-            if (bytes <= 0) {
-                send_packet(game.p2.socket, "H 1");
-                break;
-            }
-            buffer[bytes] = '\0';
-            buffer[strcspn(buffer, "\n")] = '\0';
+            if (read(game.p1.socket, buffer, BUFFER_SIZE-1) <= 0) break;
+            buffer[strcspn(buffer, "\n")] = 0;
             handle_packet(&game, buffer, 1);
         }
         
         if (FD_ISSET(game.p2.socket, &readfds)) {
             memset(buffer, 0, BUFFER_SIZE);
-            ssize_t bytes = read(game.p2.socket, buffer, BUFFER_SIZE - 1);
-            if (bytes <= 0) {
-                send_packet(game.p1.socket, "H 1");
-                break;
-            }
-            buffer[bytes] = '\0';
-            buffer[strcspn(buffer, "\n")] = '\0';
-            handle_packet(&game, buffer, 2);
+            if (read(game.p2.socket, buffer, BUFFER_SIZE-1) <= 0) break;
+            buffer[strcspn(buffer, "\n")] = 0;
+            handle_packet(&game, buffer, 0);
         }
     }
     
