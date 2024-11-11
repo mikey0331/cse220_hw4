@@ -62,17 +62,17 @@ void handle_packet(GameState *game, char *packet, int player_num) {
     Player *other = (player_num == 1) ? &game->p2 : &game->p1;
 
     switch(packet[0]) {
-        case 'F':
+        case 'F': // Forfeit
             if (game->phase < 2) {
                 send_packet(current->socket, "E 102");
                 return;
             }
-            send_packet(current->socket, "H 0");
-            send_packet(other->socket, "H 1");
+            send_packet(current->socket, "H 0");  // Player forfeits
+            send_packet(other->socket, "H 1");   // Other player wins
             exit(0);
             break;
 
-        case 'B':
+        case 'B': // Board Size
             if (game->phase != 0) {
                 send_packet(current->socket, "E 100");
                 return;
@@ -93,12 +93,12 @@ void handle_packet(GameState *game, char *packet, int player_num) {
             }
             break;
 
-        case 'I':
+        case 'I': // Ship Placement
             if (game->phase != 1) {
                 send_packet(current->socket, "E 101");
                 return;
             }
-            // Add ship placement validation here
+            // Add validation for ship placement here (e.g., check if ships overlap)
             send_packet(current->socket, "A");
             current->ready = 2;
             if (game->p1.ready == 2 && game->p2.ready == 2) {
@@ -106,7 +106,7 @@ void handle_packet(GameState *game, char *packet, int player_num) {
             }
             break;
 
-        case 'S':
+        case 'S': // Shooting
             if (game->phase != 2) {
                 send_packet(current->socket, "E 102");
                 return;
@@ -123,7 +123,7 @@ void handle_packet(GameState *game, char *packet, int player_num) {
             send_packet(current->socket, "A");
             break;
 
-        case 'Q':
+        case 'Q': // Quit
             if (game->phase != 2) {
                 send_packet(current->socket, "E 102");
                 return;
@@ -132,7 +132,7 @@ void handle_packet(GameState *game, char *packet, int player_num) {
             break;
 
         default:
-            send_packet(current->socket, "E 100");
+            send_packet(current->socket, "E 100"); // Invalid packet
     }
 }
 
