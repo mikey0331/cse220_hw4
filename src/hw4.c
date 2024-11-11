@@ -4,7 +4,6 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
-#include <sys/select.h>
 
 #define PORT1 2201
 #define PORT2 2202
@@ -24,9 +23,8 @@ typedef struct {
 } GameState;
 
 void send_packet(int socket, const char *msg) {
-    char buffer[BUFFER_SIZE];
-    snprintf(buffer, sizeof(buffer), "%s\n", msg);
-    write(socket, buffer, strlen(buffer));
+    send(socket, msg, strlen(msg), 0);
+    send(socket, "\n", 1, 0);
 }
 
 int setup_socket(int port) {
@@ -111,15 +109,19 @@ int main() {
         
         if (FD_ISSET(game.p1.socket, &readfds)) {
             memset(buffer, 0, BUFFER_SIZE);
-            if (read(game.p1.socket, buffer, BUFFER_SIZE-1) <= 0) break;
-            buffer[strcspn(buffer, "\n")] = 0;
+            ssize_t bytes = recv(game.p1.socket, buffer, BUFFER_SIZE-1, 0);
+            if (bytes <= 0) break;
+            buffer[bytes] = '\0';
+            buffer[strcspn(buffer, "\n")] = '\0';
             handle_packet(&game, buffer, 1);
         }
         
         if (FD_ISSET(game.p2.socket, &readfds)) {
             memset(buffer, 0, BUFFER_SIZE);
-            if (read(game.p2.socket, buffer, BUFFER_SIZE-1) <= 0) break;
-            buffer[strcspn(buffer, "\n")] = 0;
+            ssize_t bytes = recv(game.p2.socket, buffer, BUFFER_SIZE-1, 0);
+            if (bytes <= 0) break;
+            buffer[bytes] = '\0';
+            buffer[strcspn(buffer, "\n")] = '\0';
             handle_packet(&game, buffer, 0);
         }
     }
