@@ -13,6 +13,7 @@
 typedef struct {
     int socket;
     int ready;
+    int ships_remaining;
 } Player;
 
 typedef struct {
@@ -20,7 +21,7 @@ typedef struct {
     Player p2;
     int width;
     int height;
-    int phase;
+    int turn; // 1 for P1's turn, 2 for P2's turn
 } GameState;
 
 void send_response(int socket, const char *msg) {
@@ -71,6 +72,33 @@ void process_packet(GameState *game, char *packet, int is_p1) {
         return;
     }
 
+    if (packet[0] == 'S') { // Assume S denotes a shot
+        int x, y;
+        if (sscanf(packet, "S %d %d", &x, &y) != 2) {
+            send_response(current->socket, "E 200");
+            return;
+        }
+
+        // Check if the shot hits anything on the opponent's grid (simplified logic)
+        if (x == 5 && y == 5) { // Assume the target is at (5,5) for demo purposes
+            send_response(current->socket, "H 1"); // Hit
+            other->ships_remaining--;
+
+            // If the opponent has no ships left, they lose
+            if (other->ships_remaining == 0) {
+                send_response(current->socket, "A Win");
+                send_response(other->socket, "A Lose");
+                exit(0); // Game ends
+            }
+        } else {
+            send_response(current->socket, "H 0"); // Miss
+        }
+
+        // Switch turns
+        game->turn = (game->turn == 1) ? 2 : 1;
+        return;
+    }
+
     send_response(current->socket, "A");
 }
 
@@ -83,6 +111,11 @@ int main() {
     game.p1.socket = accept(server1_fd, NULL, NULL);
     game.p2.socket = accept(server2_fd, NULL, NULL);
     
+    game.p1.ships_remaining = 5; // Example: 5 ships for each player
+    game.p2.ships_remaining = 5;
+    
+    game.turn = 1; // Start with player 1's turn
+    
     char buffer[BUFFER_SIZE];
     fd_set readfds;
     
@@ -94,7 +127,7 @@ int main() {
         int maxfd = (game.p1.socket > game.p2.socket) ? game.p1.socket : game.p2.socket;
         select(maxfd + 1, &readfds, NULL, NULL, NULL);
         
-        if (FD_ISSET(game.p1.socket, &readfds)) {
+        if (game.turn == 1 && FD_ISSET(game.p1.socket, &readfds)) {
             memset(buffer, 0, BUFFER_SIZE);
             ssize_t bytes = read(game.p1.socket, buffer, BUFFER_SIZE-1);
             if (bytes <= 0) break;
@@ -103,7 +136,7 @@ int main() {
             process_packet(&game, buffer, 1);
         }
         
-        if (FD_ISSET(game.p2.socket, &readfds)) {
+        if (game.turn == 2 && FD_ISSET(game.p2.socket, &readfds)) {
             memset(buffer, 0, BUFFER_SIZE);
             ssize_t bytes = read(game.p2.socket, buffer, BUFFER_SIZE-1);
             if (bytes <= 0) break;
