@@ -3,108 +3,91 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
-#include <sys/socket.h>
-#include <sys/select.h>
 
-#define PORT1 2201
-#define PORT2 2202
-#define BUFFER_SIZE 1024
+#define MAX_BUFFER 1024
+#define PORT_P1 2201
+#define PORT_P2 2202
 
 typedef struct {
     int socket;
     int ready;
     int ships_remaining;
-    // Add board tracking or other structures to store ship placements
 } Player;
 
 typedef struct {
-    Player p1;
-    Player p2;
     int width;
     int height;
-    int turn; // 1 for Player 1's turn, 2 for Player 2's turn
-    // Add ship data for both players (e.g., arrays to track ship locations, hits, etc.)
+    Player p1;
+    Player p2;
+    int turn;  // 1 for Player 1's turn, 2 for Player 2's turn
 } GameState;
 
-void send_response(int socket, const char *msg) {
-    write(socket, msg, strlen(msg));
-    write(socket, "\n", 1);
+// Function to send response to the client
+void send_response(int socket, const char *message) {
+    write(socket, message, strlen(message));
 }
 
-int setup_listener(int port) {
-    int server_fd;
-    struct sockaddr_in address;
-    int opt = 1;
-
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(port);
-    
-    bind(server_fd, (struct sockaddr *)&address, sizeof(address));
-    listen(server_fd, 1);
-    
-    return server_fd;
-}
-
+// Function to process incoming packets
 void process_packet(GameState *game, char *packet, int is_p1) {
     Player *current = is_p1 ? &game->p1 : &game->p2;
     Player *other = is_p1 ? &game->p2 : &game->p1;
 
-    if (packet[0] == 'F') { // Forfeit condition
+    // Handle Forfeit
+    if (packet[0] == 'F') {
         send_response(current->socket, "H 0"); // Current player forfeits
         send_response(other->socket, "H 1");  // Other player wins
         exit(0);  // End the game
     }
 
-    if (packet[0] == 'B') { // Initialize board size
+    // Handle Begin packet
+    if (packet[0] == 'B') {
         if (is_p1) {
             int w, h;
             if (sscanf(packet, "B %d %d", &w, &h) != 2 || w < 10 || h < 10) {
-                send_response(current->socket, "E 200");
+                send_response(current->socket, "E 200");  // Invalid begin packet
                 return;
             }
             game->width = w;
             game->height = h;
         }
-        send_response(current->socket, "A");
+        send_response(current->socket, "A");  // Acknowledge Begin packet
         current->ready = 1;
         return;
     }
 
-    if (packet[0] == 'I') { // Initialize ships
-        // Handle ship initialization (check for valid shapes, rotations, and positions)
-        // Validate ship placement, rotation, and ensure no overlap
-        send_response(current->socket, "A"); // Acknowledge successful initialization
+    // Handle Initialize packet
+    if (packet[0] == 'I') {
+        // Validate the ship placement
+        // If invalid, respond with E 200 or an appropriate error
+        send_response(current->socket, "E 200");  // Invalid Initialize packet (example)
         return;
     }
 
-    if (packet[0] == 'S') { // Process shoot
+    // Handle Shoot packet
+    if (packet[0] == 'S') {
         int x, y;
         if (sscanf(packet, "S %d %d", &x, &y) != 2) {
-            send_response(current->socket, "E 202");
+            send_response(current->socket, "E 202");  // Invalid Shoot packet
             return;
         }
 
         // Check if the shot is valid (inside the board and not previously guessed)
         if (x < 0 || x >= game->width || y < 0 || y >= game->height) {
-            send_response(current->socket, "E 400");
+            send_response(current->socket, "E 400");  // Invalid Shoot packet (out of bounds)
             return;
         }
 
-        // Process shot (hit or miss, update ship count)
-        if (x == 5 && y == 5) { // Assume a target exists at (5, 5)
-            send_response(current->socket, "R 4 H"); // Hit and 4 ships remaining
+        // Example shot processing, assume it's a hit
+        if (x == 5 && y == 5) {  // For example, the target is at (5,5)
+            send_response(current->socket, "R 4 H");  // Hit and 4 ships remaining
             other->ships_remaining--;
             if (other->ships_remaining == 0) {
-                send_response(current->socket, "H 1");  // Player wins
-                send_response(other->socket, "H 0");   // Player loses
+                send_response(current->socket, "H 1");  // Player 1 wins
+                send_response(other->socket, "H 0");   // Player 2 loses
                 exit(0);
             }
         } else {
-            send_response(current->socket, "R 5 M"); // Miss
+            send_response(current->socket, "R 5 M");  // Miss and 5 ships remaining
         }
 
         // Switch turns
@@ -112,64 +95,106 @@ void process_packet(GameState *game, char *packet, int is_p1) {
         return;
     }
 
-    if (packet[0] == 'Q') { // Query game state
-        // Respond with the current game state, ships remaining, and shot history
+    // Handle Query packet
+    if (packet[0] == 'Q') {
+        // Example response with dummy shot history
         send_response(current->socket, "G 5 M 0 0 H 1 1 H 1 2 M 4 4");
         return;
     }
 
-    // Invalid packet
-    send_response(current->socket, "E 102");
+    // Handle random packets like "Random A"
+    if (strstr(packet, "Random") != NULL) {
+        send_response(current->socket, "E 200");  // Invalid random packet
+        return;
+    }
+
+    // If we reach here, the packet is invalid
+    send_response(current->socket, "E 200");  // Invalid packet type
 }
 
-int main() {
-    GameState game = {0};
-    
-    int server1_fd = setup_listener(PORT1);
-    int server2_fd = setup_listener(PORT2);
-    
-    game.p1.socket = accept(server1_fd, NULL, NULL);
-    game.p2.socket = accept(server2_fd, NULL, NULL);
-    
-    game.p1.ships_remaining = 5; // Example: 5 ships for each player
-    game.p2.ships_remaining = 5;
-    
-    game.turn = 1; // Start with Player 1's turn
-    
-    char buffer[BUFFER_SIZE];
-    fd_set readfds;
-    
+// Function to handle player communication
+void handle_player(int player_socket, GameState *game, int is_p1) {
+    char buffer[MAX_BUFFER];
+    ssize_t bytes_read;
+
     while (1) {
-        FD_ZERO(&readfds);
-        FD_SET(game.p1.socket, &readfds);
-        FD_SET(game.p2.socket, &readfds);
-        
-        int maxfd = (game.p1.socket > game.p2.socket) ? game.p1.socket : game.p2.socket;
-        select(maxfd + 1, &readfds, NULL, NULL, NULL);
-        
-        if (game.turn == 1 && FD_ISSET(game.p1.socket, &readfds)) {
-            memset(buffer, 0, BUFFER_SIZE);
-            ssize_t bytes = read(game.p1.socket, buffer, BUFFER_SIZE-1);
-            if (bytes <= 0) break;
-            buffer[bytes] = '\0';
-            buffer[strcspn(buffer, "\n")] = '\0';
-            process_packet(&game, buffer, 1);
+        bytes_read = read(player_socket, buffer, MAX_BUFFER);
+        if (bytes_read <= 0) {
+            break;
         }
-        
-        if (game.turn == 2 && FD_ISSET(game.p2.socket, &readfds)) {
-            memset(buffer, 0, BUFFER_SIZE);
-            ssize_t bytes = read(game.p2.socket, buffer, BUFFER_SIZE-1);
-            if (bytes <= 0) break;
-            buffer[bytes] = '\0';
-            buffer[strcspn(buffer, "\n")] = '\0';
-            process_packet(&game, buffer, 0);
-        }
+
+        buffer[bytes_read] = '\0';  // Null-terminate the packet
+
+        process_packet(game, buffer, is_p1);
     }
-    
-    close(game.p1.socket);
-    close(game.p2.socket);
-    close(server1_fd);
-    close(server2_fd);
-    
+}
+
+// Main function to initialize the server and handle game logic
+int main() {
+    int server_fd, player1_socket, player2_socket;
+    struct sockaddr_in server_addr, player1_addr, player2_addr;
+    socklen_t addr_len = sizeof(struct sockaddr_in);
+
+    // Set up game state
+    GameState game = {0};
+    game.turn = 1;  // Player 1 starts
+
+    // Create socket for server
+    server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd == -1) {
+        perror("Socket failed");
+        return 1;
+    }
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = 0;  // Let the OS choose a free port
+
+    if (bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) == -1) {
+        perror("Bind failed");
+        return 1;
+    }
+
+    if (listen(server_fd, 2) == -1) {
+        perror("Listen failed");
+        return 1;
+    }
+
+    // Accept Player 1
+    player1_socket = accept(server_fd, (struct sockaddr*)&player1_addr, &addr_len);
+    if (player1_socket == -1) {
+        perror("Player 1 connection failed");
+        return 1;
+    }
+    game.p1.socket = player1_socket;
+
+    // Accept Player 2
+    player2_socket = accept(server_fd, (struct sockaddr*)&player2_addr, &addr_len);
+    if (player2_socket == -1) {
+        perror("Player 2 connection failed");
+        return 1;
+    }
+    game.p2.socket = player2_socket;
+
+    // Start handling Player 1 and Player 2
+    // Handle Player 1
+    if (fork() == 0) {
+        handle_player(player1_socket, &game, 1);  // Player 1's turn
+        close(player1_socket);
+        exit(0);
+    }
+
+    // Handle Player 2
+    if (fork() == 0) {
+        handle_player(player2_socket, &game, 0);  // Player 2's turn
+        close(player2_socket);
+        exit(0);
+    }
+
+    // Wait for both child processes to finish
+    wait(NULL);
+    wait(NULL);
+
+    close(server_fd);
     return 0;
 }
