@@ -18,7 +18,6 @@ typedef struct {
     int col;
     int row;
     int hits;
-    int size;
 } Ship;
 
 typedef struct {
@@ -36,8 +35,8 @@ typedef struct {
     Player p2;
     int width;
     int height;
-    int phase;
-    int current_turn;
+    int phase;  // 0=begin, 1=init, 2=play
+    int current_turn; // 1=p1, 2=p2
 } GameState;
 
 void send_response(int socket, const char *msg) {
@@ -45,58 +44,31 @@ void send_response(int socket, const char *msg) {
     write(socket, "\n", 1);
 }
 
-int get_ship_size(int type) {
-    switch(type) {
-        case 1: return 4;  // I piece
-        case 2: return 4;  // O piece
-        case 3: return 4;  // T piece
-        case 4: return 4;  // J piece
-        case 5: return 4;  // L piece
-        case 6: return 4;  // S piece
-        case 7: return 4;  // Z piece
-        default: return 0;
+int validate_begin(char *packet, int *width, int *height) {
+    if(sscanf(packet, "B %d %d", width, height) != 2) {
+        return 200;
     }
+    if(*width < 10 || *height < 10) {
+        return 200;
+    }
+    return 0;
 }
 
-void get_ship_cells(Ship ship, int cells[4][2]) {
-    int offsets[7][4][2] = {
-        {{0,0}, {0,1}, {0,2}, {0,3}},  // I
-        {{0,0}, {0,1}, {1,0}, {1,1}},  // O
-        {{0,1}, {1,0}, {1,1}, {1,2}},  // T
-        {{0,0}, {1,0}, {2,0}, {2,1}},  // J
-        {{0,0}, {1,0}, {2,0}, {2,-1}}, // L
-        {{0,0}, {0,1}, {1,-1}, {1,0}}, // S
-        {{0,-1}, {0,0}, {1,0}, {1,1}}  // Z
-    };
-    
-    for(int i = 0; i < 4; i++) {
-        int x = offsets[ship.type-1][i][0];
-        int y = offsets[ship.type-1][i][1];
-        
-        // Apply rotation
-        for(int r = 0; r < ship.rotation; r++) {
-            int temp = x;
-            x = -y;
-            y = temp;
-        }
-        
-        cells[i][0] = ship.row + x;
-        cells[i][1] = ship.col + y;
-    }
-}
-
-int check_init_errors(GameState *game, char *packet, Ship *ships) {
+int validate_init(GameState *game, char *packet, Ship *ships) {
     char *token = strtok(packet + 2, " ");
     for(int i = 0; i < MAX_SHIPS; i++) {
+        // Check piece type
         if(!token) return 201;
         ships[i].type = atoi(token);
         if(ships[i].type < 1 || ships[i].type > 7) return 300;
         
+        // Check rotation
         token = strtok(NULL, " ");
         if(!token) return 201;
         ships[i].rotation = atoi(token);
         if(ships[i].rotation < 0 || ships[i].rotation > 3) return 301;
         
+        // Check position
         token = strtok(NULL, " ");
         if(!token) return 201;
         ships[i].col = atoi(token);
@@ -105,51 +77,140 @@ int check_init_errors(GameState *game, char *packet, Ship *ships) {
         if(!token) return 201;
         ships[i].row = atoi(token);
         
-        int cells[4][2];
-        get_ship_cells(ships[i], cells);
-        for(int j = 0; j < 4; j++) {
-            if(cells[j][0] < 0 || cells[j][0] >= game->height ||
-               cells[j][1] < 0 || cells[j][1] >= game->width) {
-                return 302;
+        // Check boundaries
+        if(ships[i].col < 0 || ships[i].col >= game->width ||
+           ships[i].row < 0 || ships[i].row >= game->height) {
+            return 302;
+        }
+    }
+    
+// Inside validate_init function:
+
+// Check overlap
+int board[MAX_BOARD][MAX_BOARD] = {0};
+for(int i = 0; i < MAX_SHIPS; i++) {
+    int cells[4][2];
+    switch(ships[i].type) {
+        case 1: // I piece
+            for(int j = 0; j < 4; j++) {
+                int r = ships[i].row;
+                int c = ships[i].col + j;
+                if(ships[i].rotation % 2) {
+                    r = ships[i].row + j;
+                    c = ships[i].col;
+                }
+                if(board[r][c]) return 303;
+                board[r][c] = 1;
             }
-        }
+            break;
+            
+        case 2: // O piece
+            for(int r = ships[i].row; r < ships[i].row + 2; r++) {
+                for(int c = ships[i].col; c < ships[i].col + 2; c++) {
+                    if(board[r][c]) return 303;
+                    board[r][c] = 1;
+                }
+            }
+            break;
+            
+        case 3: // T piece
+            cells[0][0] = ships[i].row;     cells[0][1] = ships[i].col + 1;
+            cells[1][0] = ships[i].row + 1; cells[1][1] = ships[i].col;
+            cells[2][0] = ships[i].row + 1; cells[2][1] = ships[i].col + 1;
+            cells[3][0] = ships[i].row + 1; cells[3][1] = ships[i].col + 2;
+            for(int rot = 0; rot < ships[i].rotation; rot++) {
+                for(int j = 0; j < 4; j++) {
+                    int temp = cells[j][0] - ships[i].row;
+                    cells[j][0] = ships[i].row - (cells[j][1] - ships[i].col);
+                    cells[j][1] = ships[i].col + temp;
+                }
+            }
+            for(int j = 0; j < 4; j++) {
+                if(board[cells[j][0]][cells[j][1]]) return 303;
+                board[cells[j][0]][cells[j][1]] = 1;
+            }
+            break;
+            
+        case 4: // J piece
+            cells[0][0] = ships[i].row;     cells[0][1] = ships[i].col;
+            cells[1][0] = ships[i].row + 1; cells[1][1] = ships[i].col;
+            cells[2][0] = ships[i].row + 2; cells[2][1] = ships[i].col;
+            cells[3][0] = ships[i].row + 2; cells[3][1] = ships[i].col + 1;
+            for(int rot = 0; rot < ships[i].rotation; rot++) {
+                for(int j = 0; j < 4; j++) {
+                    int temp = cells[j][0] - ships[i].row;
+                    cells[j][0] = ships[i].row - (cells[j][1] - ships[i].col);
+                    cells[j][1] = ships[i].col + temp;
+                }
+            }
+            for(int j = 0; j < 4; j++) {
+                if(board[cells[j][0]][cells[j][1]]) return 303;
+                board[cells[j][0]][cells[j][1]] = 1;
+            }
+            break;
+            
+        case 5: // L piece
+            cells[0][0] = ships[i].row;     cells[0][1] = ships[i].col;
+            cells[1][0] = ships[i].row + 1; cells[1][1] = ships[i].col;
+            cells[2][0] = ships[i].row + 2; cells[2][1] = ships[i].col;
+            cells[3][0] = ships[i].row + 2; cells[3][1] = ships[i].col - 1;
+            for(int rot = 0; rot < ships[i].rotation; rot++) {
+                for(int j = 0; j < 4; j++) {
+                    int temp = cells[j][0] - ships[i].row;
+                    cells[j][0] = ships[i].row - (cells[j][1] - ships[i].col);
+                    cells[j][1] = ships[i].col + temp;
+                }
+            }
+            for(int j = 0; j < 4; j++) {
+                if(board[cells[j][0]][cells[j][1]]) return 303;
+                board[cells[j][0]][cells[j][1]] = 1;
+            }
+            break;
+            
+        case 6: // S piece
+            cells[0][0] = ships[i].row;     cells[0][1] = ships[i].col;
+            cells[1][0] = ships[i].row;     cells[1][1] = ships[i].col + 1;
+            cells[2][0] = ships[i].row + 1; cells[2][1] = ships[i].col - 1;
+            cells[3][0] = ships[i].row + 1; cells[3][1] = ships[i].col;
+            for(int rot = 0; rot < ships[i].rotation; rot++) {
+                for(int j = 0; j < 4; j++) {
+                    int temp = cells[j][0] - ships[i].row;
+                    cells[j][0] = ships[i].row - (cells[j][1] - ships[i].col);
+                    cells[j][1] = ships[i].col + temp;
+                }
+            }
+            for(int j = 0; j < 4; j++) {
+                if(board[cells[j][0]][cells[j][1]]) return 303;
+                board[cells[j][0]][cells[j][1]] = 1;
+            }
+            break;
+            
+        case 7: // Z piece
+            cells[0][0] = ships[i].row;     cells[0][1] = ships[i].col - 1;
+            cells[1][0] = ships[i].row;     cells[1][1] = ships[i].col;
+            cells[2][0] = ships[i].row + 1; cells[2][1] = ships[i].col;
+            cells[3][0] = ships[i].row + 1; cells[3][1] = ships[i].col + 1;
+            for(int rot = 0; rot < ships[i].rotation; rot++) {
+                for(int j = 0; j < 4; j++) {
+                    int temp = cells[j][0] - ships[i].row;
+                    cells[j][0] = ships[i].row - (cells[j][1] - ships[i].col);
+                    cells[j][1] = ships[i].col + temp;
+                }
+            }
+            for(int j = 0; j < 4; j++) {
+                if(board[cells[j][0]][cells[j][1]]) return 303;
+                board[cells[j][0]][cells[j][1]] = 1;
+            }
+            break;
     }
-    
-    // Check overlap
-    int board[MAX_BOARD][MAX_BOARD] = {0};
-    for(int i = 0; i < MAX_SHIPS; i++) {
-        int cells[4][2];
-        get_ship_cells(ships[i], cells);
-        for(int j = 0; j < 4; j++) {
-            if(board[cells[j][0]][cells[j][1]]) return 303;
-            board[cells[j][0]][cells[j][1]] = 1;
-        }
-    }
-    
-    return 0;
 }
 
-void place_ships(Player *player, Ship *ships) {
-    memcpy(player->ships, ships, sizeof(Ship) * MAX_SHIPS);
-    player->num_ships = MAX_SHIPS;
-    player->ships_remaining = MAX_SHIPS;
-    
-    for(int i = 0; i < MAX_SHIPS; i++) {
-        int cells[4][2];
-        get_ship_cells(ships[i], cells);
-        for(int j = 0; j < 4; j++) {
-            player->board[cells[j][0]][cells[j][1]] = i + 1;
-        }
-    }
+    return 0;
 }
 
 void process_shot(GameState *game, Player *shooter, Player *target, int row, int col) {
     if(target->board[row][col]) {
-        int ship_index = target->board[row][col] - 1;
-        target->ships[ship_index].hits++;
-        if(target->ships[ship_index].hits == 4) {
-            target->ships_remaining--;
-        }
+        target->ships_remaining--;
         char response[32];
         snprintf(response, sizeof(response), "R %d H", target->ships_remaining);
         send_response(shooter->socket, response);
@@ -165,20 +226,16 @@ void process_shot(GameState *game, Player *shooter, Player *target, int row, int
         send_response(shooter->socket, response);
     }
     shooter->shots[row][col] = 1;
+    game->current_turn = (game->current_turn == 1) ? 2 : 1;
 }
 
 void build_query_response(GameState *game, Player *player, Player *opponent, char *response) {
-    strcpy(response, "G ");
-    char temp[16];
-    sprintf(temp, "%d", opponent->ships_remaining);
-    strcat(response, temp);
-    
+    sprintf(response, "G %d", opponent->ships_remaining);
     for(int i = 0; i < game->height; i++) {
         for(int j = 0; j < game->width; j++) {
             if(player->shots[i][j]) {
-                strcat(response, " ");
-                strcat(response, opponent->board[i][j] ? "H" : "M");
-                sprintf(temp, " %d %d", j, i);
+                char temp[32];
+                sprintf(temp, " %c %d %d", opponent->board[i][j] ? 'H' : 'M', j, i);
                 strcat(response, temp);
             }
         }
@@ -188,7 +245,15 @@ void build_query_response(GameState *game, Player *player, Player *opponent, cha
 void process_packet(GameState *game, char *packet, int is_p1) {
     Player *current = is_p1 ? &game->p1 : &game->p2;
     Player *other = is_p1 ? &game->p2 : &game->p1;
+    
+    // Handle forfeit immediately
+    if(packet[0] == 'F') {
+        send_response(current->socket, "H 0");
+        send_response(other->socket, "H 1");
+        exit(0);
+    }
 
+    // Phase checks
     if(game->phase == 0 && packet[0] != 'B') {
         send_response(current->socket, "E 100");
         return;
@@ -197,22 +262,22 @@ void process_packet(GameState *game, char *packet, int is_p1) {
         send_response(current->socket, "E 101");
         return;
     }
-    if(game->phase == 2 && packet[0] != 'S' && packet[0] != 'Q' && packet[0] != 'F') {
-        send_response(current->socket, "E 102");
-        return;
+    if(game->phase == 2) {
+        if(packet[0] != 'S' && packet[0] != 'Q' && packet[0] != 'F') {
+            send_response(current->socket, "E 102");
+            return;
+        }
+        if((is_p1 && game->current_turn != 1) || (!is_p1 && game->current_turn != 2)) {
+            return; // Wrong turn
+        }
     }
 
     switch(packet[0]) {
-        case 'F':
-            send_response(current->socket, "H 0");
-            send_response(other->socket, "H 1");
-            exit(0);
-            break;
-
-        case 'B':
+        case 'B': {
             if(is_p1) {
                 int w, h;
-                if(sscanf(packet, "B %d %d", &w, &h) != 2 || w < 10 || h < 10) {
+                int error = validate_begin(packet, &w, &h);
+                if(error) {
                     send_response(current->socket, "E 200");
                     return;
                 }
@@ -221,22 +286,28 @@ void process_packet(GameState *game, char *packet, int is_p1) {
             }
             send_response(current->socket, "A");
             current->ready = 1;
-            if(game->p1.ready && game->p2.ready) game->phase = 1;
+            if(game->p1.ready && game->p2.ready) {
+                game->phase = 1;
+            }
             break;
+        }
 
         case 'I': {
             Ship ships[MAX_SHIPS];
-            int error = check_init_errors(game, packet, ships);
+            int error = validate_init(game, packet, ships);
             if(error) {
                 char error_msg[16];
                 snprintf(error_msg, sizeof(error_msg), "E %d", error);
                 send_response(current->socket, error_msg);
                 return;
             }
-            place_ships(current, ships);
+            memcpy(current->ships, ships, sizeof(ships));
+            current->ships_remaining = MAX_SHIPS;
             send_response(current->socket, "A");
             current->ready = 2;
-            if(game->p1.ready == 2 && game->p2.ready == 2) game->phase = 2;
+            if(game->p1.ready == 2 && game->p2.ready == 2) {
+                game->phase = 2;
+            }
             break;
         }
 
@@ -264,9 +335,6 @@ void process_packet(GameState *game, char *packet, int is_p1) {
             send_response(current->socket, response);
             break;
         }
-
-        default:
-            send_response(current->socket, "E 100");
     }
 }
 
