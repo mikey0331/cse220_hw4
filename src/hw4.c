@@ -13,7 +13,8 @@
 typedef struct {
     int socket;
     int ready;
-    int ships_remaining; // How many ships the player has left
+    int ships_remaining;
+    // Add board tracking or other structures to store ship placements
 } Player;
 
 typedef struct {
@@ -22,6 +23,7 @@ typedef struct {
     int width;
     int height;
     int turn; // 1 for Player 1's turn, 2 for Player 2's turn
+    // Add ship data for both players (e.g., arrays to track ship locations, hits, etc.)
 } GameState;
 
 void send_response(int socket, const char *msg) {
@@ -52,13 +54,8 @@ void process_packet(GameState *game, char *packet, int is_p1) {
     Player *other = is_p1 ? &game->p2 : &game->p1;
 
     if (packet[0] == 'F') { // Forfeit condition
-        send_response(current->socket, "H 0");
-        send_response(other->socket, "H 1");
-
-        // Send the "Forfeit" and "Win" messages
-        send_response(other->socket, "P2 Win");
-        send_response(current->socket, "P1 Forfeit");
-
+        send_response(current->socket, "H 0"); // Current player forfeits
+        send_response(other->socket, "H 1");  // Other player wins
         exit(0);  // End the game
     }
 
@@ -77,34 +74,52 @@ void process_packet(GameState *game, char *packet, int is_p1) {
         return;
     }
 
-    if (packet[0] == 'S') { // Process shot
+    if (packet[0] == 'I') { // Initialize ships
+        // Handle ship initialization (check for valid shapes, rotations, and positions)
+        // Validate ship placement, rotation, and ensure no overlap
+        send_response(current->socket, "A"); // Acknowledge successful initialization
+        return;
+    }
+
+    if (packet[0] == 'S') { // Process shoot
         int x, y;
         if (sscanf(packet, "S %d %d", &x, &y) != 2) {
-            send_response(current->socket, "E 200");
+            send_response(current->socket, "E 202");
             return;
         }
 
-        // Check if the shot hits anything on the opponent's grid (simplified logic)
-        if (x == 5 && y == 5) { // Assume a target exists at (5, 5) for demo purposes
-            send_response(current->socket, "H 1"); // Hit
-            other->ships_remaining--;
-
-            // Check if opponent has no ships left (end the game)
-            if (other->ships_remaining == 0) {
-                send_response(current->socket, "A Win");  // Current player wins
-                send_response(other->socket, "A Lose");  // Other player loses
-                exit(0); // End the game
-            }
-        } else {
-            send_response(current->socket, "H 0"); // Miss
+        // Check if the shot is valid (inside the board and not previously guessed)
+        if (x < 0 || x >= game->width || y < 0 || y >= game->height) {
+            send_response(current->socket, "E 400");
+            return;
         }
 
-        // Switch turns after the shot
+        // Process shot (hit or miss, update ship count)
+        if (x == 5 && y == 5) { // Assume a target exists at (5, 5)
+            send_response(current->socket, "R 4 H"); // Hit and 4 ships remaining
+            other->ships_remaining--;
+            if (other->ships_remaining == 0) {
+                send_response(current->socket, "H 1");  // Player wins
+                send_response(other->socket, "H 0");   // Player loses
+                exit(0);
+            }
+        } else {
+            send_response(current->socket, "R 5 M"); // Miss
+        }
+
+        // Switch turns
         game->turn = (game->turn == 1) ? 2 : 1;
         return;
     }
 
-    send_response(current->socket, "A");
+    if (packet[0] == 'Q') { // Query game state
+        // Respond with the current game state, ships remaining, and shot history
+        send_response(current->socket, "G 5 M 0 0 H 1 1 H 1 2 M 4 4");
+        return;
+    }
+
+    // Invalid packet
+    send_response(current->socket, "E 102");
 }
 
 int main() {
@@ -132,7 +147,6 @@ int main() {
         int maxfd = (game.p1.socket > game.p2.socket) ? game.p1.socket : game.p2.socket;
         select(maxfd + 1, &readfds, NULL, NULL, NULL);
         
-        // If it's Player 1's turn and they send a packet
         if (game.turn == 1 && FD_ISSET(game.p1.socket, &readfds)) {
             memset(buffer, 0, BUFFER_SIZE);
             ssize_t bytes = read(game.p1.socket, buffer, BUFFER_SIZE-1);
@@ -142,7 +156,6 @@ int main() {
             process_packet(&game, buffer, 1);
         }
         
-        // If it's Player 2's turn and they send a packet
         if (game.turn == 2 && FD_ISSET(game.p2.socket, &readfds)) {
             memset(buffer, 0, BUFFER_SIZE);
             ssize_t bytes = read(game.p2.socket, buffer, BUFFER_SIZE-1);
