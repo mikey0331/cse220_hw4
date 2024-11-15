@@ -58,7 +58,7 @@ void send_exact_response(int socket, const char *msg) {
 
 void send_halt(int socket, int is_winner) {
     char response[3];
-    sprintf(response, "H%d", is_winner);
+    sprintf(response, "H %d", is_winner);
     write(socket, response, 2);
     write(socket, "\n", 1);
 }
@@ -215,7 +215,7 @@ void process_packet(GameState *game, char *packet, int is_p1) {
             int error = validate_init(game, packet, ships);
             if(error) {
                 char error_msg[16];
-                sprintf(error_msg, "E%d", error);
+                sprintf(error_msg, "E %d", error);
                 send_exact_response(current->socket, error_msg);
                 return;
             }
@@ -234,15 +234,15 @@ void process_packet(GameState *game, char *packet, int is_p1) {
             }
             int row, col;
             if(sscanf(packet, "S %d %d", &row, &col) != 2) {
-                send_exact_response(current->socket, "E202");
+                send_exact_response(current->socket, "E 202");
                 return;
             }
             if(row < 0 || row >= game->height || col < 0 || col >= game->width) {
-                send_exact_response(current->socket, "E400");
+                send_exact_response(current->socket, "E 400");
                 return;
             }
             if(current->shots[row][col]) {
-                send_exact_response(current->socket, "E401");
+                send_exact_response(current->socket, "E 401");
                 return;
             }
             process_shot(game, current, other, row, col);
