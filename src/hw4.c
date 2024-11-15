@@ -57,9 +57,9 @@ void send_exact_response(int socket, const char *msg) {
 }
 
 void send_halt(int socket, int is_winner) {
-    char response[3];
+    char response[5];
     sprintf(response, "H %d", is_winner);
-    write(socket, response, 2);
+    write(socket, response, 3);
     write(socket, "\n", 1);
 }
 
@@ -122,6 +122,8 @@ int validate_init(GameState *game, char *packet, Ship *ships) {
         token = strtok(NULL, " ");
         if(!token) return 201;
         ships[i].col = atoi(token);
+        
+        token = strtok(NULL, " ");
     }
 
     int board[MAX_BOARD][MAX_BOARD] = {0};
@@ -185,7 +187,8 @@ void process_packet(GameState *game, char *packet, int is_p1) {
     Player *other = is_p1 ? &game->p2 : &game->p1;
 
     if(packet[0] == 'F') {
-        write(current->socket, "H0\n", 3);
+        char response[5] = {'H', ' ', '0', '\n'};  // Exactly 4 bytes with space
+        write(current->socket, response, 4);        // Send exactly "H 0\n"
         game->current_turn = (game->current_turn == 1) ? 2 : 1;
         game->phase = 3;
         return;
@@ -215,7 +218,7 @@ void process_packet(GameState *game, char *packet, int is_p1) {
             int error = validate_init(game, packet, ships);
             if(error) {
                 char error_msg[16];
-                sprintf(error_msg, "E %d", error);
+                sprintf(error_msg, "E%d", error);
                 send_exact_response(current->socket, error_msg);
                 return;
             }
@@ -234,15 +237,15 @@ void process_packet(GameState *game, char *packet, int is_p1) {
             }
             int row, col;
             if(sscanf(packet, "S %d %d", &row, &col) != 2) {
-                send_exact_response(current->socket, "E 202");
+                send_exact_response(current->socket, "E202");
                 return;
             }
             if(row < 0 || row >= game->height || col < 0 || col >= game->width) {
-                send_exact_response(current->socket, "E 400");
+                send_exact_response(current->socket, "E400");
                 return;
             }
             if(current->shots[row][col]) {
-                send_exact_response(current->socket, "E 401");
+                send_exact_response(current->socket, "E401");
                 return;
             }
             process_shot(game, current, other, row, col);
