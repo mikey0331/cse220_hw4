@@ -51,15 +51,21 @@ const int TETRIS_PIECES[7][4][2] = {
     {{0,-1}, {0,0}, {1,0}, {1,1}}     // Z
 };
 
-void send_exact_response(int socket, const char *msg) {
-    write(socket, msg, strlen(msg));
+void send_error(int socket, int code) {
+    char response[16];
+    sprintf(response, "E %d", code);
+    write(socket, response, strlen(response));
     write(socket, "\n", 1);
 }
 
+void send_ack(int socket) {
+    write(socket, "A\n", 2);
+}
+
 void send_halt(int socket, int is_winner) {
-    char response[5];
+    char response[16];
     sprintf(response, "H %d", is_winner);
-    write(socket, response, 3);
+    write(socket, response, strlen(response));
     write(socket, "\n", 1);
 }
 
@@ -131,7 +137,6 @@ int validate_init(GameState *game, char *packet, Ship *ships) {
         int result = validate_ship_placement(game, ships[i], board);
         if(result != 0) return result;
     }
-    
     return 0;
 }
 
@@ -187,10 +192,22 @@ void process_packet(GameState *game, char *packet, int is_p1) {
     Player *other = is_p1 ? &game->p2 : &game->p1;
 
     if(packet[0] == 'F') {
-        char response[5] = {'H', ' ', '0', '\n'};  // Exactly 4 bytes with space
-        write(current->socket, response, 4);        // Send exactly "H 0\n"
+        send_halt(current->socket, 0);
         game->current_turn = (game->current_turn == 1) ? 2 : 1;
         game->phase = 3;
+        return;
+    }
+
+    if(game->phase == 0 && packet[0] != 'B') {
+        send_error(current->socket, 100);
+        return;
+    }
+    if(game->phase == 1 && packet[0] != 'I') {
+        send_error(current->socket, 101);
+        return;
+    }
+    if(game->phase == 2 && packet[0] != 'S' && packet[0] != 'Q') {
+        send_error(current->socket, 102);
         return;
     }
 
@@ -199,13 +216,13 @@ void process_packet(GameState *game, char *packet, int is_p1) {
             if(is_p1) {
                 int w, h;
                 if(sscanf(packet, "B %d %d", &w, &h) != 2 || w < 10 || h < 10) {
-                    send_exact_response(current->socket, "E 200");
+                    send_error(current->socket, 200);
                     return;
                 }
                 game->width = w;
                 game->height = h;
             }
-            send_exact_response(current->socket, "A");
+            send_ack(current->socket);
             current->ready = 1;
             if(game->p1.ready && game->p2.ready) {
                 game->phase = 1;
@@ -217,13 +234,11 @@ void process_packet(GameState *game, char *packet, int is_p1) {
             Ship ships[MAX_SHIPS];
             int error = validate_init(game, packet, ships);
             if(error) {
-                char error_msg[16];
-                sprintf(error_msg, "E%d", error);
-                send_exact_response(current->socket, error_msg);
+                send_error(current->socket, error);
                 return;
             }
             place_ships(game, current, ships);
-            send_exact_response(current->socket, "A");
+            send_ack(current->socket);
             current->ready = 2;
             if(game->p1.ready == 2 && game->p2.ready == 2) {
                 game->phase = 2;
@@ -237,15 +252,15 @@ void process_packet(GameState *game, char *packet, int is_p1) {
             }
             int row, col;
             if(sscanf(packet, "S %d %d", &row, &col) != 2) {
-                send_exact_response(current->socket, "E 202");
+                send_error(current->socket, 202);
                 return;
             }
             if(row < 0 || row >= game->height || col < 0 || col >= game->width) {
-                send_exact_response(current->socket, "E 400");
+                send_error(current->socket, 400);
                 return;
             }
             if(current->shots[row][col]) {
-                send_exact_response(current->socket, "E 401");
+                send_error(current->socket, 401);
                 return;
             }
             process_shot(game, current, other, row, col);
@@ -258,7 +273,8 @@ void process_packet(GameState *game, char *packet, int is_p1) {
             }
             char response[BUFFER_SIZE];
             build_query_response(game, current, other, response);
-            send_exact_response(current->socket, response);
+            write(current->socket, response, strlen(response));
+            write(current->socket, "\n", 1);
             break;
         }
     }
@@ -333,6 +349,17 @@ int main() {
             buffer[bytes] = '\0';
             buffer[strcspn(buffer, "\n")] = '\0';
             process_packet(&game, buffer, 0);
+        }
+        
+        if(game.phase == 3) {
+            if(game.current_turn == 1) {
+                send_halt(game.p1.socket, 1);
+                send_halt(game.p2.socket, 0);
+            } else {
+                send_halt(game.p1.socket, 0);
+                send_halt(game.p2.socket, 1);
+            }
+            break;
         }
     }
     
